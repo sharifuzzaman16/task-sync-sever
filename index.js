@@ -31,10 +31,16 @@ async function run() {
 
         app.post('/tasks', async (req, res) => {
             const task = req.body;
-
             const result = await tasksCollection.insertOne(task);
             res.send(result);
-        })
+        });
+
+        app.get("/tasks", async (req, res) => {
+            const userEmail = req.query.userEmail;
+            const query = { userEmail: userEmail };
+            const tasks = await tasksCollection.find(query).toArray();
+            res.json(tasks);
+        });
 
 
 
