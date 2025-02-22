@@ -68,6 +68,22 @@ async function run() {
             res.json({ message: "Task updated successfully", updatedTask: { _id: taskId, ...updatedTask } });
         });
 
+        app.delete("/tasks/:id", async (req, res) => {
+            const taskId = req.params.id;
+        
+            if (!taskId) {
+                return res.status(400).json({ error: "Task ID is required" });
+            }
+        
+            const filter = { _id: new ObjectId(taskId) };
+            const result = await tasksCollection.deleteOne(filter);
+        
+            if (result.deletedCount === 0) {
+                return res.status(404).json({ error: "Task not found" });
+            }
+        
+            res.json({ message: "Task deleted successfully" });
+        });
 
 
 
