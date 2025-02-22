@@ -1,4 +1,4 @@
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
@@ -28,6 +28,12 @@ async function run() {
 
         const tasksCollection = client.db("taskSyncDB").collection("tasks");
 
+        app.get("/tasks", async (req, res) => {
+            const userEmail = req.query.userEmail;
+            const query = { userEmail: userEmail };
+            const tasks = await tasksCollection.find(query).toArray();
+            res.json(tasks);
+        });
 
         app.post('/tasks', async (req, res) => {
             const task = req.body;
@@ -35,12 +41,33 @@ async function run() {
             res.send(result);
         });
 
-        app.get("/tasks", async (req, res) => {
-            const userEmail = req.query.userEmail;
-            const query = { userEmail: userEmail };
-            const tasks = await tasksCollection.find(query).toArray();
-            res.json(tasks);
+        app.put("/tasks/:id", async (req, res) => {
+            const taskId = req.params.id;
+            const updatedTask = req.body;
+
+            if (!taskId || !updatedTask) {
+                return res.status(400).json({ error: "Task ID and updated task data are required" });
+            }
+
+            const filter = { _id: new ObjectId(taskId) };
+            const updateDoc = {
+                $set: {
+                    title: updatedTask.title,
+                    description: updatedTask.description,
+                    category: updatedTask.category,
+                    priority: updatedTask.priority,
+                },
+            };
+
+            const result = await tasksCollection.updateOne(filter, updateDoc);
+
+            if (result.matchedCount === 0) {
+                return res.status(404).json({ error: "Task not found" });
+            }
+
+            res.json({ message: "Task updated successfully", updatedTask: { _id: taskId, ...updatedTask } });
         });
+
 
 
 
