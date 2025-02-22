@@ -97,23 +97,41 @@ async function run() {
             }
         });
 
+        app.patch("/tasks/:id", async (req, res) => {
+            try {
+                const { id } = req.params;
+                const updateFields = req.body;
+        
+                const result = await tasksCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: updateFields }
+                );
+        
+                if (result.modifiedCount > 0) {
+                    res.status(200).json({ message: "Task updated successfully", updatedTask: updateFields });
+                } else {
+                    res.status(404).json({ message: "Task not found or no changes applied" });
+                }
+            } catch (error) {
+                res.status(500).json({ message: "Server error", error });
+            }
+        });
+
         app.put("/tasks/:id", async (req, res) => {
             const { id } = req.params;
-            const { title, description, category, priority, userEmail } = req.body;
+            const { category } = req.body;
 
             try {
                 const taskId = new ObjectId(id);
-                const task = await tasksCollection.findOne({ _id: taskId, userEmail: userEmail });
+                const task = await tasksCollection.findOne({ _id: taskId });
 
                 if (!task) {
                     return res.status(404).json({ error: "Task not found" });
                 }
 
                 const updatedTask = {
-                    title,
-                    description,
+                    ...task,
                     category,
-                    priority,
                 };
 
                 await tasksCollection.updateOne(
@@ -121,7 +139,7 @@ async function run() {
                     { $set: updatedTask }
                 );
 
-                res.json({ message: "Task updated successfully", updatedTask });
+                res.json({ message: "Task category updated successfully", updatedTask });
             } catch (error) {
                 console.error("Failed to update task:", error);
                 res.status(500).json({ error: "Failed to update task" });
