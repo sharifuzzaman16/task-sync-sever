@@ -2,92 +2,161 @@ const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
+const http = require("http");
+const WebSocket = require("ws");
+
 dotenv.config();
 const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
 const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
 
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ki2z3.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
-
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
-const client = new MongoClient(uri, {
-    serverApi: {
-        version: ServerApiVersion.v1,
-        strict: true,
-        deprecationErrors: true,
-    }
-});
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ki2z3.mongodb.net/?retryWrites=true&w=majority`;
 
 async function run() {
     try {
-        // Connect the client to the server	(optional starting in v4.7)
-        // await client.connect();
+        const client = new MongoClient(uri, {
+            serverApi: {
+                version: ServerApiVersion.v1,
+                strict: true,
+                deprecationErrors: true,
+            },
+        });
 
+        await client.connect();
+        console.log("Connected to MongoDB Atlas!");
+        const db = client.db("taskSyncDB");
+        const tasksCollection = db.collection("tasks");
 
-        const tasksCollection = client.db("taskSyncDB").collection("tasks");
+        // WebSocket connection for real-time updates
+        // Backend WebSocket handler
+        wss.on("connection", (ws) => {
+            console.log("Client connected");
 
+            ws.on("message", (message) => {
+                const data = JSON.parse(message);
+
+                if (data.type === "INITIAL_TASKS" && data.userEmail) {
+                    // Fetch tasks for the specific user
+                    tasksCollection.find({ userEmail: data.userEmail }).toArray().then((tasks) => {
+                        ws.send(JSON.stringify({ type: "INITIAL_TASKS", data: tasks }));
+                    });
+                }
+            });
+
+            // Listen for changes in the tasks collection
+            const changeStream = tasksCollection.watch([], { fullDocument: "updateLookup" });
+            changeStream.on("change", (change) => {
+                if (change.operationType === "insert") {
+                    // Send new task to the client
+                    ws.send(JSON.stringify({ type: "TASK_ADDED", data: change.fullDocument }));
+                } else if (change.operationType === "update") {
+                    // Send updated task to the client
+                    ws.send(JSON.stringify({ type: "TASK_UPDATED", data: change.fullDocument }));
+                } else if (change.operationType === "delete") {
+                    // Send deleted task ID to the client
+                    ws.send(JSON.stringify({ type: "TASK_DELETED", data: { _id: change.documentKey._id } }));
+                }
+            });
+
+            ws.on("close", () => {
+                console.log("Client disconnected");
+                changeStream.close();
+            });
+        });
+
+        // REST API endpoints
         app.get("/tasks", async (req, res) => {
             const userEmail = req.query.userEmail;
-            const query = { userEmail: userEmail };
-            const tasks = await tasksCollection.find(query).toArray();
-            res.json(tasks);
+            if (!userEmail) {
+                return res.status(400).json({ error: "User email is required" });
+            }
+
+            const query = { userEmail: userEmail }; // Filter tasks by userEmail
+            try {
+                const tasks = await tasksCollection.find(query).toArray();
+                res.json(tasks);
+            } catch (error) {
+                console.error("Failed to fetch tasks:", error);
+                res.status(500).json({ error: "Failed to fetch tasks" });
+            }
         });
 
         app.post('/tasks', async (req, res) => {
             const task = req.body;
-            const result = await tasksCollection.insertOne(task);
-            res.send(result);
+            try {
+                const result = await tasksCollection.insertOne(task);
+                res.send(result);
+            } catch (error) {
+                console.error("Failed to add task:", error);
+                res.status(500).json({ error: "Failed to add task" });
+            }
         });
 
         app.put("/tasks/:id", async (req, res) => {
-            const taskId = req.params.id;
-            const updatedTask = req.body;
+            const { id } = req.params;
+            const { title, description, category, priority, userEmail } = req.body;
 
-            if (!taskId || !updatedTask) {
-                return res.status(400).json({ error: "Task ID and updated task data are required" });
+            try {
+                const taskId = new ObjectId(id);
+                const task = await tasksCollection.findOne({ _id: taskId, userEmail: userEmail });
+
+                if (!task) {
+                    return res.status(404).json({ error: "Task not found" });
+                }
+
+                const updatedTask = {
+                    title,
+                    description,
+                    category,
+                    priority,
+                };
+
+                await tasksCollection.updateOne(
+                    { _id: taskId },
+                    { $set: updatedTask }
+                );
+
+                res.json({ message: "Task updated successfully", updatedTask });
+            } catch (error) {
+                console.error("Failed to update task:", error);
+                res.status(500).json({ error: "Failed to update task" });
             }
-
-            const filter = { _id: new ObjectId(taskId) };
-            const updateDoc = {
-                $set: {
-                    title: updatedTask.title,
-                    description: updatedTask.description,
-                    category: updatedTask.category,
-                    priority: updatedTask.priority,
-                },
-            };
-
-            const result = await tasksCollection.updateOne(filter, updateDoc);
-
-            if (result.matchedCount === 0) {
-                return res.status(404).json({ error: "Task not found" });
-            }
-
-            res.json({ message: "Task updated successfully", updatedTask: { _id: taskId, ...updatedTask } });
         });
 
         app.delete("/tasks/:id", async (req, res) => {
             const taskId = req.params.id;
-        
-            if (!taskId) {
-                return res.status(400).json({ error: "Task ID is required" });
-            }
-        
             const filter = { _id: new ObjectId(taskId) };
-            const result = await tasksCollection.deleteOne(filter);
-        
-            if (result.deletedCount === 0) {
-                return res.status(404).json({ error: "Task not found" });
+            try {
+                const result = await tasksCollection.deleteOne(filter);
+                if (result.deletedCount === 0) {
+                    return res.status(404).json({ error: "Task not found" });
+                }
+                res.json({ message: "Task deleted successfully" });
+            } catch (error) {
+                console.error("Failed to delete task:", error);
+                res.status(500).json({ error: "Failed to delete task" });
             }
-        
-            res.json({ message: "Task deleted successfully" });
         });
 
+        app.get("/tasks/completed", async (req, res) => {
+            const userEmail = req.query.userEmail;
+            try {
+                const completedTasks = await tasksCollection.find({
+                    category: "Done",
+                    userEmail: userEmail,
+                }).toArray();
+                res.json(completedTasks);
+            } catch (error) {
+                console.error("Error fetching completed tasks:", error);
+                res.status(500).json({ error: "Failed to fetch completed tasks" });
+            }
+        });
 
-
-        // Send a ping to confirm a successful connection
         await client.db("admin").command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
@@ -95,13 +164,13 @@ async function run() {
         // await client.close();
     }
 }
+
 run().catch(console.dir);
 
-
 app.get('/', (req, res) => {
-    res.send('Hello World!')
-})
+    res.send('Hello World!');
+});
 
-app.listen(port, () => {
-    console.log(`TaskSync is Syncing on port ${port}`)
-})
+server.listen(port, () => {
+    console.log(`TaskSync is Syncing on port ${port}`);
+});
